@@ -23,6 +23,9 @@ namespace Robust.Client.UserInterface.Controls
         private readonly List<RichTextEntry> _entries = new();
         private bool _isAtBottom = true;
 
+        private FormattedMessage? lastmessage;
+        private int stacks = 1;
+
         private int _totalContentHeight;
         private bool _firstLine = true;
         private StyleBox? _styleBoxOverride;
@@ -87,11 +90,37 @@ namespace Robust.Client.UserInterface.Controls
             AddMessage(msg);
         }
 
-        public void AddMessage(FormattedMessage message)
+        public bool TryStack(FormattedMessage message)
+        {
+            if (lastmessage != null)
+            {
+                if (message.ToString() == lastmessage.ToString())
+                    return true;
+            }
+            return false;
+        }
+
+        public void AddMessage(FormattedMessage message, bool stackable = false)
         {
             var entry = new RichTextEntry(message, this, _tagManager, null);
 
             entry.Update(_getFont(), _getContentBox().Width, UIScale);
+
+            if (stackable)
+            {
+                if (TryStack(message))
+                {
+                    stacks++;
+                    entry.ChatStacks = stacks;
+
+                    RemoveEntry(_entries.Count - 1);
+                }
+                else
+                {
+                    stacks = 1;
+                    lastmessage = message;
+                }
+            }
 
             _entries.Add(entry);
             var font = _getFont();

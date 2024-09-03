@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using Robust.Client.Graphics;
@@ -33,9 +35,19 @@ namespace Robust.Client.UserInterface
         public int Width;
 
         /// <summary>
+        ///     How many times was this message repeated in chat.
+        /// </summary>
+        public int ChatStacks;
+
+        /// <summary>
         ///     The combined text indices in the message's text tags to put line breaks.
         /// </summary>
         public ValueList<int> LineBreaks;
+
+        /// <summary>
+        ///     All fonts used in this message.
+        /// </summary>
+        public List<Font> Fonts;
 
         private readonly Dictionary<int, Control> _tagControls = new();
 
@@ -45,6 +57,7 @@ namespace Robust.Client.UserInterface
             Height = 0;
             Width = 0;
             LineBreaks = default;
+            Fonts = [];
             _defaultColor = defaultColor ?? new(200, 200, 200);
             _tagManager = tagManager;
             _tagsAllowed = tagsAllowed;
@@ -78,8 +91,11 @@ namespace Robust.Client.UserInterface
             // Bear with me here.
             // I am so deeply sorry for the person adding stuff to this in the future.
 
-            Height = defaultFont.GetHeight(uiScale);
+            Height = 0;
             LineBreaks.Clear();
+            Fonts = [];
+
+            Fonts.Add(defaultFont);
 
             int? breakLine;
             var wordWrap = new WordWrap(maxSizeX);
@@ -96,12 +112,20 @@ namespace Robust.Client.UserInterface
                 nodeIndex++;
                 var text = ProcessNode(node, context);
 
+                if (text == "")
+                    continue;
+
                 if (!context.Font.TryPeek(out var font))
                     font = defaultFont;
 
                 // And go over every character.
                 foreach (var rune in text.EnumerateRunes())
                 {
+                    if (!Fonts.Contains(font))
+                    {
+                        Fonts.Add(font);
+                    }
+
                     if (ProcessRune(ref this, rune, out breakLine))
                         continue;
 
@@ -132,6 +156,8 @@ namespace Robust.Client.UserInterface
                     return;
             }
 
+            Height += GetLineHeightScaled(Fonts, uiScale, lineHeightScale);
+
             Width = wordWrap.FinalizeText(out breakLine);
             CheckLineBreak(ref this, breakLine);
 
@@ -157,13 +183,15 @@ namespace Robust.Client.UserInterface
                 if (line is { } l)
                 {
                     src.LineBreaks.Add(l);
-                    if (!context.Font.TryPeek(out var font))
-                        font = defaultFont;
 
-                    src.Height += GetLineHeight(font, uiScale, lineHeightScale);
+                    src.Height += GetLineHeightScaled(src.Fonts, uiScale, lineHeightScale);
                 }
             }
         }
+
+        /* I MADE THIS SHIT SOMEWHAT WORK WITH LARGER FONTS
+         IT DOES NOT SUPPORT VARYING FONTS THO
+         OR SOMETIMES IT DOES, USE AT YOUR OWN RISK */
 
         public readonly void Draw(
             DrawingHandleScreen handle,
@@ -180,7 +208,8 @@ namespace Robust.Client.UserInterface
 
             var globalBreakCounter = 0;
             var lineBreakIndex = 0;
-            var baseLine = drawBox.TopLeft + new Vector2(0, defaultFont.GetAscent(uiScale) + verticalOffset);
+
+            var baseLine = drawBox.TopLeft + new Vector2(0, GetAscentScaled(Fonts, uiScale, lineHeightScale) + verticalOffset);
             var controlYAdvance = 0f;
 
             var nodeIndex = -1;
@@ -188,9 +217,19 @@ namespace Robust.Client.UserInterface
             {
                 nodeIndex++;
                 var text = ProcessNode(node, context);
-                if (!context.Color.TryPeek(out var color) || !context.Font.TryPeek(out var font))
+
+                if (text == "")
+                    continue;
+
+                //System.Console.WriteLine($"{text} adding -> {GetAscentScaled(LineFonts[1], uiScale, lineHeightScale)}");
+
+                if (!context.Color.TryPeek(out var color))
                 {
                     color = _defaultColor;
+                }
+
+                if (!context.Font.TryPeek(out var font))
+                {
                     font = defaultFont;
                 }
 
@@ -199,7 +238,7 @@ namespace Robust.Client.UserInterface
                     if (lineBreakIndex < LineBreaks.Count &&
                         LineBreaks[lineBreakIndex] == globalBreakCounter)
                     {
-                        baseLine = new Vector2(drawBox.Left, baseLine.Y + GetLineHeight(font, uiScale, lineHeightScale) + controlYAdvance);
+                        baseLine = new Vector2(drawBox.Left, baseLine.Y + GetLineHeightScaled(Fonts, uiScale, lineHeightScale) + controlYAdvance);
                         controlYAdvance = 0;
                         lineBreakIndex += 1;
                     }
@@ -215,11 +254,37 @@ namespace Robust.Client.UserInterface
 
                 var invertedScale = 1f / uiScale;
 
-                control.Position = new Vector2(baseLine.X * invertedScale, (baseLine.Y - defaultFont.GetAscent(uiScale)) * invertedScale);
+                control.Position = new Vector2(baseLine.X * invertedScale, (baseLine.Y - GetLargestFont(Fonts, uiScale).GetAscent(uiScale)) * invertedScale);
                 control.Measure(new Vector2(Width, Height));
                 var advanceX = control.DesiredPixelSize.X;
-                controlYAdvance = Math.Max(0f, (control.DesiredPixelSize.Y - GetLineHeight(font, uiScale, lineHeightScale)) * invertedScale);
+                controlYAdvance = Math.Max(0f, (control.DesiredPixelSize.Y - GetLineHeightScaled(Fonts, uiScale, lineHeightScale) * invertedScale));
                 baseLine += new Vector2(advanceX, 0);
+            }
+
+
+            // Draw the chat stacks icon
+
+            if (ChatStacks > 1)
+            {
+                // Draw the background circle
+                baseLine += new Vector2(0, 7 * uiScale);
+                defaultFont.DrawChar(handle, new Rune('\u25cf'), baseLine, uiScale * 3f, Color.Crimson);
+                baseLine += new Vector2(7 * uiScale, -9 * uiScale);
+
+                var chatStacksString = $"x{ChatStacks}";
+                var scale = 0.8f;
+
+                if (ChatStacks > 9)
+                {
+                    baseLine += new Vector2(-2 * uiScale, -1 * uiScale);
+                    scale = 0.7f;
+                }
+
+                foreach (var rune in chatStacksString.EnumerateRunes())
+                {
+                    var advance = defaultFont.DrawChar(handle, rune, baseLine, uiScale * scale, Color.White);
+                    baseLine += new Vector2(advance, 0);
+                }
             }
         }
 
@@ -245,10 +310,43 @@ namespace Robust.Client.UserInterface
             return tag.TextAfter(node);
         }
 
-        private static int GetLineHeight(Font font, float uiScale, float lineHeightScale)
+        private static int GetLineHeightScaled(List<Font> fontsInLine, float uiScale, float lineHeightScale)
         {
-            var height = font.GetLineHeight(uiScale);
+            var height = 0;
+
+            foreach (var font in fontsInLine)
+            {
+                if (font.GetLineHeight(uiScale) > height)
+                    height = font.GetLineHeight(uiScale);
+            }
+
             return (int)(height * lineHeightScale);
+        }
+
+        private static int GetAscentScaled(List<Font> fontsInLine, float uiScale, float lineHeightScale)
+        {
+            var ascent = 0;
+
+            foreach (var font in fontsInLine)
+            {
+                if (font.GetAscent(uiScale) > ascent)
+                    ascent = font.GetAscent(uiScale);
+            }
+
+            return (int)(ascent * lineHeightScale);
+        }
+
+        private static Font GetLargestFont(List<Font> fontsInLine, float uiScale)
+        {
+            var largestfont = fontsInLine.Last();
+
+            foreach (var font in fontsInLine)
+            {
+                if (font.GetLineHeight(uiScale) > largestfont.GetLineHeight(uiScale))
+                    largestfont = font;
+            }
+
+            return largestfont;
         }
     }
 }
